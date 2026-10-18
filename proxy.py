@@ -17,10 +17,10 @@ HERE = Path(__file__).resolve().parent
 HESTIA = Path('/usr/local/hestia')
 STATE = Path('/var/lib/hestia-reverse-proxy')
 BACKUPS = Path('/root/hestia-reverse-proxy-backups')
-TEMPLATES = HESTIA / 'data/templates/web/nginx/php-fpm'
+TEMPLATES = HESTIA / 'data/templates/web/nginx'
 PACKAGES = HESTIA / 'data/packages'
 MAP = Path('/etc/nginx/conf.d/rp-websocket.conf')
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 
 
 def fail(message):
@@ -74,12 +74,12 @@ def rendered(values):
     return result
 
 
-def inspect_server():
+def inspect_server(allow_setup_domain=None):
     if os.geteuid() != 0:
         fail('Ejecuta prepare/restore como root.')
     conf = config(HESTIA / 'conf/hestia.conf')
-    if conf.get('WEB_SYSTEM') != 'nginx' or conf.get('PROXY_SYSTEM', ''):
-        fail('Esta instalación requiere Hestia Nginx + PHP-FPM, sin Apache.')
+    if conf.get('WEB_SYSTEM') != 'apache2' or conf.get('PROXY_SYSTEM') != 'nginx':
+        fail('Esta receta requiere Hestia con Nginx como proxy y Apache, como la guía original.')
     users = json.loads(run(HESTIA / 'bin/v-list-users', 'json'))
     if not isinstance(users, dict) or not users:
         fail('No se pudo validar la lista de usuarios de Hestia.')
@@ -87,13 +87,16 @@ def inspect_server():
     kept_templates = {'default', 'suspended', 'rp'}
     for user in users:
         domains = json.loads(run(HESTIA / 'bin/v-list-web-domains', user, 'json'))
-        if not isinstance(domains, dict) or domains:
+        setup_only = (allow_setup_domain and user == 'admin'
+                      and set(domains) == {allow_setup_domain}
+                      and domains[allow_setup_domain].get('TPL') == 'default') if isinstance(domains, dict) else False
+        if not isinstance(domains, dict) or (domains and not setup_only):
             fail('Hay dominios existentes. La limpieza solo sirve ANTES de agregar webs.')
         data = config(HESTIA / 'data/users' / user / 'user.conf')
-        if not data.get('PACKAGE') or not data.get('WEB_TEMPLATE'):
+        if not data.get('PACKAGE') or not data.get('PROXY_TEMPLATE'):
             fail('No se pudieron leer las dependencias del usuario ' + user)
         kept_packages.add(data['PACKAGE'])
-        kept_templates.add(data['WEB_TEMPLATE'])
+        kept_templates.add(data['PROXY_TEMPLATE'])
     if not TEMPLATES.is_dir() or not PACKAGES.is_dir():
         fail('No se encuentran los directorios de plantillas/paquetes.')
     if not Path('/etc/ssl/certs/ca-certificates.crt').is_file():
@@ -106,7 +109,7 @@ def package_text():
     values = config(PACKAGES / 'default.pkg')
     if not {'WEB_TEMPLATE', 'BACKEND_TEMPLATE', 'BACKUPS'} <= values.keys():
         fail('default.pkg no tiene el formato esperado; no se reemplazará.')
-    values.update(WEB_TEMPLATE='rp', PROXY_TEMPLATE='', DNS_TEMPLATE='',
+    values.update(WEB_TEMPLATE='default', PROXY_TEMPLATE='rp', DNS_TEMPLATE='',
                   WEB_DOMAINS='unlimited', WEB_ALIASES='unlimited', DNS_DOMAINS='0',
                   MAIL_DOMAINS='0', MAIL_ACCOUNTS='0', DATABASES='0', NS='',
                   SHELL='nologin')
@@ -150,7 +153,7 @@ def rollback(backup, manifest):
 
 def prepare(args):
     values = origin_values(args.origin, args.port, args.tls_name)
-    kept_packages, kept_templates = inspect_server()
+    kept_packages, kept_templates = inspect_server(getattr(args, 'allow_setup_domain', None))
     addresses = json.loads(run(HESTIA / 'bin/v-list-sys-ips', 'json'))
     if not isinstance(addresses, dict) or not addresses:
         fail('No se pudieron comprobar las IP del proxy.')
@@ -170,6 +173,13 @@ def prepare(args):
     unused = sorted(p for p in TEMPLATES.iterdir()
                     if p.suffix in ('.tpl', '.stpl', '.sh') and p.stem not in kept_templates)
     unused += sorted(p for p in PACKAGES.glob('*.pkg') if p.stem not in kept_packages)
+    # Exact IP-named default vhosts, not broad 0*/1* globs (0rtt is not a vhost).
+    for path in sorted(MAP.parent.glob('*.conf')):
+        try:
+            ipaddress.ip_address(path.stem)
+        except ValueError:
+            continue
+        unused.append(path)
     for path in unused:
         if not path.is_file() or path.is_symlink():
             fail('No se apartará una ruta irregular: ' + str(path))
@@ -182,6 +192,7 @@ def prepare(args):
     if not args.apply:
         print('SIMULACIÓN: no se ha modificado Hestia. Añade --apply para aplicar.')
         return
+    print('[BARRIDO 1/3] Apartando vhosts por IP, plantillas y paquetes sobrantes.', flush=True)
     backup = BACKUPS / datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     backup.mkdir(parents=True, mode=0o700)
     BACKUPS.chmod(0o700)
@@ -199,6 +210,8 @@ def prepare(args):
             manifest['moved'].append(str(source))
             save()
             shutil.move(str(source), str(destination))
+            print('  Apartado: ' + str(source), flush=True)
+        print('[BARRIDO 2/3] Instalando plantillas rp y paquete del proxy.', flush=True)
         for path, text in outputs.items():
             manifest['created'].append(str(path))
             save()
@@ -208,6 +221,7 @@ def prepare(args):
         manifest['created'].append(str(pkg))
         save()
         run(HESTIA / 'bin/v-add-user-package', package_input, 'reverse-proxy')
+        print('[BARRIDO 3/3] Validando Nginx y recargando.', flush=True)
         run('nginx', '-t')
         run('systemctl', 'reload', 'nginx')
         manifest['after_hashes'] = {str(p): digest(p) for p in (*outputs, pkg)}
@@ -219,12 +233,12 @@ def prepare(args):
         rollback(backup, manifest)
         raise
     print('Preparación terminada. Respaldo: ' + str(backup))
-    print('Crea un usuario con el paquete reverse-proxy y agrega sus dominios.')
+    print('Paquete reverse-proxy preparado para asignarlo al usuario desde Hestia.')
     print('Todavía debes comprobar el sitio y emitir su certificado desde Hestia.')
 
 
 def restore(args):
-    inspect_server()
+    inspect_server(getattr(args, 'allow_setup_domain', None))
     backup = args.backup.resolve()
     if backup.parent != BACKUPS or not (backup / 'manifest.json').is_file():
         fail('El respaldo debe ser un directorio directo de ' + str(BACKUPS))
@@ -234,7 +248,7 @@ def restore(args):
         fail('El respaldo no corresponde a la instalación registrada.')
     for user in json.loads(run(HESTIA / 'bin/v-list-users', 'json')):
         data = config(HESTIA / 'data/users' / user / 'user.conf')
-        if data.get('PACKAGE') == 'reverse-proxy' or data.get('WEB_TEMPLATE') == 'rp':
+        if data.get('PACKAGE') == 'reverse-proxy' or data.get('PROXY_TEMPLATE') == 'rp':
             fail('El usuario ' + user + ' usa reverse-proxy. Reasigna su paquete antes de restaurar.')
     for path, expected in manifest.get('after_hashes', {}).items():
         if digest(Path(path)) != expected:
@@ -267,9 +281,11 @@ def main():
             item.add_argument('--output', type=Path, required=True)
         else:
             item.add_argument('--apply', action='store_true')
+            item.add_argument('--allow-setup-domain', help='Solo el hostname default de admin creado por el instalador')
     item = sub.add_parser('restore')
     item.add_argument('backup', type=Path)
     item.add_argument('--apply', action='store_true')
+    item.add_argument('--allow-setup-domain')
     args = parser.parse_args()
     if args.command == 'render':
         values = origin_values(args.origin, args.port, args.tls_name)

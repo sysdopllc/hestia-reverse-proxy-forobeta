@@ -16,7 +16,7 @@ class Safety(unittest.TestCase):
         # Keep temporary fixtures for inspection; no recursive deletion.
         self.root = Path(tempfile.mkdtemp(prefix='hestia-rp-test-'))
         self.hestia = self.root / 'hestia'
-        self.templates = self.hestia / 'data/templates/web/nginx/php-fpm'
+        self.templates = self.hestia / 'data/templates/web/nginx'
         self.packages = self.hestia / 'data/packages'
         self.state = self.root / 'state'
         self.backups = self.root / 'backups'
@@ -29,9 +29,9 @@ class Safety(unittest.TestCase):
         for path in (self.templates, self.packages, self.map.parent,
                      self.hestia / 'conf', self.hestia / 'data/users/admin'):
             path.mkdir(parents=True)
-        (self.hestia / 'conf/hestia.conf').write_text("WEB_SYSTEM='nginx'\nPROXY_SYSTEM=''\n")
+        (self.hestia / 'conf/hestia.conf').write_text("WEB_SYSTEM='apache2'\nPROXY_SYSTEM='nginx'\n")
         (self.hestia / 'data/users/admin/user.conf').write_text(
-            "PACKAGE='default'\nWEB_TEMPLATE='default'\n")
+            "PACKAGE='default'\nWEB_TEMPLATE='default'\nPROXY_TEMPLATE='default'\n")
         for name in ('default.tpl', 'default.stpl', 'suspended.tpl', 'wordpress.tpl'):
             (self.templates / name).write_text('original ' + name)
         (self.packages / 'default.pkg').write_text(
@@ -100,6 +100,9 @@ class Safety(unittest.TestCase):
         self.assertTrue((self.templates / 'default.tpl').exists())
         self.assertTrue(any(Path(c[0]).name == 'v-add-user-package' for c in self.calls))
         self.assertIn('proxy_ssl_verify on;', (self.templates / 'rp.stpl').read_text())
+        package = proxy.config(self.packages / 'reverse-proxy.pkg')
+        self.assertEqual(package['WEB_TEMPLATE'], 'default')
+        self.assertEqual(package['PROXY_TEMPLATE'], 'rp')
         with self.assertRaisesRegex(RuntimeError, 'Ya existe'):
             proxy.prepare(self.args)
         proxy.restore(argparse.Namespace(backup=backup, apply=True))
@@ -134,6 +137,35 @@ class Safety(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'ruta irregular'):
             proxy.prepare(self.args)
         self.assertFalse(self.backups.exists())
+
+    def test_ip_vhosts_quarantined_security_map_preserved(self):
+        (self.map.parent / '192.0.2.20.conf').write_text('server { listen 80; }')
+        (self.map.parent / '0rtt-anti-replay.conf').write_text('security map')
+        self.args.apply = True
+        proxy.prepare(self.args)
+        self.assertFalse((self.map.parent / '192.0.2.20.conf').exists())
+        self.assertEqual((self.map.parent / '0rtt-anti-replay.conf').read_text(), 'security map')
+
+    def test_default_setup_hostname_allowed_but_live_site_rejected(self):
+        self.domains = {'proxy.example.com': {'TPL': 'default'}}
+        self.args.allow_setup_domain = 'proxy.example.com'
+        proxy.prepare(self.args)
+        self.domains['real.example.com'] = {'TPL': 'default'}
+        with self.assertRaisesRegex(RuntimeError, 'dominios existentes'):
+            proxy.prepare(self.args)
+
+    def test_installer_keeps_original_no_firewall_and_no_password_in_argv(self):
+        setup_spec = importlib.util.spec_from_file_location('rp_setup',
+                     Path(__file__).resolve().parents[1] / 'setup.py')
+        setup = importlib.util.module_from_spec(setup_spec)
+        setup_spec.loader.exec_module(setup)
+        args = setup.installer_arguments('/setup.sh', 'proxy.example.com', 'user@example.com')
+        self.assertEqual(args[args.index('--iptables') + 1], 'no')
+        self.assertEqual(args[args.index('--fail2ban') + 1], 'no')
+        self.assertEqual(args[args.index('--interactive') + 1], 'no')
+        self.assertEqual(args[args.index('--apache') + 1], 'yes')
+        self.assertNotIn('--force', args)
+        self.assertNotIn('--password', args)
 
 
 if __name__ == '__main__':

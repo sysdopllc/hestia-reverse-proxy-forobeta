@@ -91,7 +91,7 @@ def main():
     http_port, https_port = [r.getsockname()[1] for r in reservations]
     values = proxy.origin_values('192.0.2.10', origin.server_port, '$host')
     substitutions = {'192.0.2.10': '127.0.0.1', '%ip%': '127.0.0.1',
-                     '%web_port%': str(http_port), '%web_ssl_port%': str(https_port),
+                     '%proxy_port%': str(http_port), '%proxy_ssl_port%': str(https_port),
                      '%domain_idn%': 'site.test', '%alias_idn%': 'www.site.test bad.test',
                      '%domain%': 'site.test', '%home%/%user%': '/lab',
                      '%ssl_pem%': '/lab/cert.pem', '%ssl_key%': '/lab/key.pem',

@@ -8,9 +8,9 @@ Visitante ── HTTPS ── [Cloudflare opcional] ── HTTPS ── VPS prox
 
 Reemplazo del material del tutorial de 2024 cuyo repositorio original fue retirado. Este proyecto reconstruye su función; no es una copia recuperada del antiguo `default.pkg`.
 
-**Alcance:** VPS nuevo con Ubuntu 24.04 LTS y HestiaCP en modo **Nginx + PHP-FPM, sin Apache**. Referencia revisada: HestiaCP 1.10.5. Hestia mantiene PHP-FPM como parte de esta modalidad; las plantillas `rp` no ejecutan PHP localmente. No desinstales paquetes base del panel.
+**Alcance:** VPS nuevo con Ubuntu LTS admitido por Hestia y su esquema **Nginx como proxy + Apache/PHP-FPM**, como en la guía original. El instalador usa el canal estable oficial de Hestia, sin fijar una única versión. Las plantillas `rp` envían las peticiones directamente al servidor final. No desinstales paquetes base del panel.
 
-**Validación:** 8 pruebas de seguridad/rollback del script y 14 comprobaciones contra Nginx real. No se ha probado una instalación completa de Hestia, su actualización ni una emisión/renovación pública de Let's Encrypt. Detalles en [VALIDATION.md](VALIDATION.md).
+**Validación:** 11 pruebas de seguridad/rollback del script y 14 comprobaciones contra Nginx real. No se ha probado una instalación completa de Hestia, su actualización ni una emisión/renovación pública de Let's Encrypt. Detalles en [VALIDATION.md](VALIDATION.md).
 
 ## 1. Antes de empezar
 
@@ -18,7 +18,7 @@ Reemplazo del material del tutorial de 2024 cuyo repositorio original fue retira
 - El dominio y `www` funcionando en el servidor final con un certificado HTTPS válido para ambos nombres. Si no usas `www`, no lo agregues.
 - IP del proxy e IP del servidor final distintas. El origen debe aceptar conexiones desde el proxy.
 - Un hostname propio para el panel, por ejemplo `proxy.tudominio.com`, cuyo DNS apunte al VPS proxy.
-- Puertos 80/443 accesibles para las webs; SSH y 56464 según el acceso administrativo que necesites. Conserva firewall y Fail2Ban.
+- Puertos 80/443 accesibles para las webs; SSH y 56464 según el acceso administrativo que necesites. La receta no instala firewall ni Fail2Ban.
 
 Prueba el origen ANTES de cambiar DNS, sustituyendo dominio e IP:
 
@@ -29,78 +29,57 @@ curl --resolve www.ejemplo.com:443:203.0.113.10 https://www.ejemplo.com/ -I
 
 Las direcciones `203.0.113.10` y los dominios de ejemplo se sustituyen por los tuyos. No uses `-k` para esconder un certificado incorrecto.
 
-## 2. Instalar Hestia
+## 2. Instalar Hestia estable: un bloque
 
-Ejecuta cada bloque solo si el anterior terminó bien. Este paso se hace en el VPS proxy, no en el servidor que aloja las webs.
-
-```bash
-apt-get update && apt-get install -y ca-certificates curl git python3
-```
+En un VPS Ubuntu LTS nuevo, como root:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fSL https://raw.githubusercontent.com/hestiacp/hestiacp/release/install/hst-install.sh -o hst-install.sh
+apt-get update && apt-get install -y ca-certificates curl git python3 && \
+git clone --branch v1.1.0 --depth 1 \
+  https://github.com/sysdopllc/hestia-reverse-proxy-forobeta.git \
+  /root/hestia-reverse-proxy && \
+python3 /root/hestia-reverse-proxy/setup.py install
 ```
 
-Puedes revisar el instalador descargado antes de ejecutarlo. Los componentes elegidos son:
+El asistente pregunta hostname, correo e IP del origen. Descarga el instalador estable oficial de Hestia sin fijar una versión del panel. Hestia valida el sistema operativo admitido. Se genera una contraseña y se guarda en `/root/hestia-reverse-proxy-setup.json`, accesible solo para root; se entrega al instalador por stdin, no como argumento del comando.
+
+La receta conserva **`--iptables no --fail2ban no`**. No instala firewall ni Fail2Ban, ni desactiva protecciones existentes. Instala Nginx + Apache/PHP-FPM, sin DNS, correo ni bases de datos. El panel usa el puerto 56464. El asistente rechaza una instalación existente y no usa `--force`.
+
+Cuando termine, reinicia con `reboot` y vuelve a entrar por SSH.
+
+## 3. Barrido automático de vhosts, plantillas y paquetes
 
 ```bash
-bash hst-install.sh --apache no --phpfpm yes --multiphp no \
-  --vsftpd no --proftpd no --named no --mysql no --postgresql no \
-  --exim no --dovecot no --clamav no --spamassassin no \
-  --iptables yes --fail2ban yes --quota no --api no \
-  --port 56464 --lang es
+python3 /root/hestia-reverse-proxy/setup.py finish
 ```
 
-Sigue las preguntas del instalador, usa tu hostname real y guarda las credenciales. No se publica una contraseña universal ni se fuerza la instalación sobre un sistema ocupado. Si pide reiniciar, reinicia y vuelve a entrar por SSH.
+Esta es la limpieza de la receta original, ahora con respaldo y registro:
 
-El comando oficial descarga la versión estable disponible en ese momento. Antes de usar una versión posterior a la referencia revisada, consulta sus cambios y repite las comprobaciones de esta guía.
+1. Aparta los vhosts cuyo nombre completo es una IP (`/etc/nginx/conf.d/192.0.2.20.conf`, por ejemplo). No usa `0*`/`1*`, que también alcanzarían archivos como `0rtt-anti-replay.conf`.
+2. Aparta plantillas de aplicaciones y paquetes sin usuarios, manteniendo las dependencias de Hestia (`default`, `suspended` y las referenciadas).
+3. Genera e instala `rp.tpl`, `rp.stpl` y el mapa WebSocket; crea el paquete con la CLI oficial y lo asigna a admin para los dominios nuevos.
+4. Valida Nginx y recarga. Muestra `BARRIDO 1/3`, `2/3`, `3/3`, los archivos movidos y la ruta del respaldo.
 
-## 3. Descargar y preparar el proxy: incluye limpieza
+No necesitas editar vhosts a mano ni hacer dos pasadas de simulación/aplicación. El hostname default que crea el instalador se conserva para el panel; se rechaza cualquier otra web existente. Lo apartado permanece bajo `/root/hestia-reverse-proxy-backups/FECHA/`. Ante un fallo se intenta restaurar la preparación; si el rollback también falla, se muestra el error. No se desinstalan librerías del panel.
 
-Todavía no agregues dominios. Descarga esta versión del proyecto en una carpeta nueva:
-
-```bash
-git clone --branch v1.0.0 --depth 1 https://github.com/sysdopllc/hestia-reverse-proxy-forobeta.git /root/hestia-reverse-proxy
-cd /root/hestia-reverse-proxy
-```
-
-Indica la IP del servidor final; no la IP del proxy:
-
-```bash
-read -r -p "IP del servidor final: " ORIGIN_IP
-python3 proxy.py prepare --origin "$ORIGIN_IP"
-```
-
-Primero muestra el plan. Para aplicarlo:
-
-```bash
-python3 proxy.py prepare --origin "$ORIGIN_IP" --apply
-```
-
-**La limpieza sigue formando parte del tutorial.** Se apartan las plantillas web de aplicaciones y los paquetes de hosting que no estén en uso. Se conservan `default`, `suspended`, los paquetes de sistema y las dependencias de usuarios existentes. Se crean `rp.tpl`, `rp.stpl`, el mapa de WebSocket y el paquete `reverse-proxy` mediante la CLI de Hestia.
-
-Todo lo retirado se mueve a `/root/hestia-reverse-proxy-backups/FECHA/`; no se borra. Se registra cada movimiento y los hashes de los archivos nuevos. Si falla la preparación, intenta restaurar los archivos y valida Nginx antes de recargarlo. Si también falla la restauración, el error queda visible y el respaldo permanece disponible.
-
-Ya no se usan `rm -rf /etc/nginx/conf.d/0*` ni comodines similares: alcanzaban, entre otros, `0rtt-anti-replay.conf`, que contiene variables usadas por Hestia. Tampoco se elimina la línea global `Early-Data`. La plantilla HTTPS del proxy desactiva 0-RTT solo en sus propios dominios.
-
-El script rechaza dominios existentes, destinos ocupados, enlaces simbólicos inesperados y una IP de origen que pertenezca al proxy según Hestia. No es un migrador de servidores de producción.
+`proxy.py prepare --origin IP` sigue disponible como simulación opcional para revisión técnica; `--apply` aplica los cambios. `setup.py finish` hace la aplicación directamente con los datos guardados y permite retomar la asignación del paquete tras una interrupción, comprobando los archivos registrados.
 
 ## 4. Usuario, dominio y DNS
 
-1. Entra a Hestia: `https://IP_DEL_PROXY:56464`. Comprueba la identidad del panel mediante la consola/datos de tu proveedor; configura su hostname y certificado.
-2. Como administrador, crea un usuario para tus webs y selecciona el paquete **reverse-proxy**. No alojes las webs en el usuario administrador.
-3. Entra como ese usuario y agrega tu dominio. Agrega `www` como alias solo si lo usarás. No crees DNS ni correo en este VPS.
-4. En opciones avanzadas confirma que la **plantilla web es `rp`**.
+1. Entra a Hestia: `https://IP_DEL_PROXY:56464`, usuario admin y contraseña mostrada al terminar. Comprueba la identidad del panel y configura su certificado.
+2. El asistente ya asignó el paquete **reverse-proxy** a admin. El hostname que creó Hestia se conserva y no se transforma en proxy.
+3. En Web agrega tu dominio. Agrega `www` como alias solo si lo usarás. No crees DNS ni correo en este VPS.
+4. En opciones avanzadas confirma que la **plantilla de proxy es `rp`**; la plantilla web permanece en `default`.
 5. En tu proveedor DNS, apunta los registros A del dominio y `www` a la IP del proxy. Revisa los AAAA: no deben conservar la IPv6 del servidor final. Esta receta configura el listener de la IP seleccionada por Hestia; no publiques AAAA hasta comprobar el servicio por IPv6.
 
 Para un dominio existente en un usuario nuevo, la selección se puede hacer con la CLI nativa:
 
 ```bash
-/usr/local/hestia/bin/v-change-web-domain-tpl USUARIO ejemplo.com rp no
+/usr/local/hestia/bin/v-change-web-domain-proxy-tpl USUARIO ejemplo.com rp "" no
 nginx -t && systemctl reload nginx
 ```
 
-Sustituye `USUARIO` y `ejemplo.com`. No cambies manualmente los archivos generados bajo `conf/web`: Hestia los reconstruye.
+Sustituye `USUARIO` y `ejemplo.com`. El argumento vacío de extensiones es intencional: `rp` reenvía todas las rutas al origen y no contiene una ubicación de estáticos separada. No cambies manualmente los archivos generados bajo `conf/web`: Hestia los reconstruye.
 
 ## 5. HTTPS y Cloudflare
 
@@ -153,7 +132,7 @@ python3 proxy.py restore /root/hestia-reverse-proxy-backups/FECHA
 python3 proxy.py restore /root/hestia-reverse-proxy-backups/FECHA --apply
 ```
 
-Usa la ruta exacta mostrada al instalar. Si ya creaste un usuario con `reverse-proxy`, reasígnalo primero a un paquete compatible desde Hestia. La restauración rechaza cambios posteriores para no pisarlos y conserva los archivos retirados. Con dominios activos, se requiere una migración por dominio con respaldo; no ejecutes esta limpieza.
+Usa la ruta exacta mostrada al instalar. Antes de restaurar, reasigna admin al paquete default desde Hestia. Si solo existe el hostname inicial, añade `--allow-setup-domain proxy.tudominio.com` a restore (sustituye ese nombre). La restauración rechaza cambios posteriores para no pisarlos y conserva los archivos retirados. Con dominios activos, se requiere una migración por dominio con respaldo; no ejecutes esta limpieza.
 
 Para obtener plantillas sin instalar ni limpiar nada:
 
@@ -161,10 +140,13 @@ Para obtener plantillas sin instalar ni limpiar nada:
 python3 proxy.py render --origin 203.0.113.10 --output ./generadas
 ```
 
-El directorio debe ser nuevo. Para una instalación antigua con Apache, estas plantillas **no se copian directamente**: cambian los puertos, el directorio y la CLI de asignación. Prepara un proxy nuevo y migra DNS cuando lo hayas validado, o adapta y prueba una migración específica. No fuerces la preparación.
+El directorio debe ser nuevo. Las plantillas de esta revisión usan `%proxy_port%` y `%proxy_ssl_port%` en `data/templates/web/nginx/`, con `PROXY_TEMPLATE=rp` y `WEB_TEMPLATE=default`. El barrido sigue siendo exclusivamente para un VPS nuevo. En instalaciones existentes, revisa y prueba una migración por dominio; no fuerces la preparación.
+
+La revisión v1.0.0 utilizaba la modalidad Nginx sin Apache. No mezcles sus rutas ni paquetes con v1.1.0 y no ejecutes el barrido para actualizar un proxy con webs.
 
 ## Archivos y referencias
 
+- `setup.py`: instalación asistida y barrido automático, en dos fases.
 - `proxy.py`: simulación, preparación con limpieza y restauración.
 - `templates/rp.tpl`, `templates/rp.stpl`: HTTP y HTTPS, con marcadores `@@...@@` que sustituye el script.
 - `templates/rp-websocket.conf`: mapa utilizado por ambas plantillas.

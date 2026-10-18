@@ -1,8 +1,8 @@
-# Validación de v1.0.0
+# Validación de v1.1.0
 
-17 de octubre de 2026. Código de referencia de HestiaCP: 1.10.5. Pruebas ejecutadas en un entorno aislado; ningún servidor de producción fue modificado.
+17 de octubre de 2026. La revisión original consultó HestiaCP 1.10.5; es un dato de la revisión, no una versión exigida por el tutorial. El instalador usa el canal estable. Pruebas ejecutadas en un entorno aislado; ningún servidor de producción fue modificado.
 
-## Script: 8 pruebas aprobadas
+## Script: 11 pruebas aprobadas
 
 - Rechazo de IP y nombre TLS no válidos.
 - Simulación sin cambios en Hestia.
@@ -18,6 +18,13 @@ Estas pruebas utilizan un árbol temporal y sustituyen las llamadas a Hestia/sys
 ```bash
 sudo python3 -m unittest discover -s tests -v
 ```
+
+Pruebas adicionales de la revisión:
+- Barrido de vhosts con nombre IP conservando 0rtt-anti-replay.conf.
+- Excepción para el hostname default del instalador, con rechazo de otras webs.
+- Modo automático, firewall y Fail2Ban desactivados en las opciones del instalador, sin contraseña en argv ni --force.
+
+El nuevo asistente completo no se ha ejecutado contra un VPS real; sus opciones y los comandos nativos se contrastaron con el código oficial. Se revisó además, solo en lectura, un proxy existente: Nginx como proxy de Hestia, puertos `%proxy_port%`/`%proxy_ssl_port%` y asignación desde `PROXY_TEMPLATE`. No se publica configuración privada de ese servidor. Las pruebas de tráfico se repitieron con las plantillas de v1.1.0.
 
 ## Tráfico real: 14 comprobaciones aprobadas
 
