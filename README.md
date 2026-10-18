@@ -1,4 +1,4 @@
-# Reverse proxy con HestiaCP para ForoBeta
+# Reverse Proxy con HestiaCP para ForoBeta
 
 Plantillas y preparación de un VPS dedicado al proxy. El contenido continúa en el servidor final; los visitantes se conectan a la IP del proxy.
 
