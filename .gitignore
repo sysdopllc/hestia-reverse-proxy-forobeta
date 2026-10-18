@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+generadas/
+lab*/
+*.pem
+*.key
+*.log
