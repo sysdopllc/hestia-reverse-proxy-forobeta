@@ -176,7 +176,7 @@ def main():
         with socket.create_connection(('127.0.0.1', http_port), timeout=5) as sock:
             sock.sendall(b'GET /ws HTTP/1.1\r\nHost: site.test\r\nUpgrade: websocket\r\n'
                          b'Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n'
-                         b'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n')
+                         b'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n')  # gitleaks:allow Fixed protocol test nonce, not a credential.
             received = b''
             while b'\x81\x02OK' not in received:
                 block = sock.recv(4096)

@@ -2,6 +2,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -166,6 +167,35 @@ class Safety(unittest.TestCase):
         self.assertEqual(args[args.index('--apache') + 1], 'yes')
         self.assertNotIn('--force', args)
         self.assertNotIn('--password', args)
+
+    def load_setup(self):
+        setup_spec = importlib.util.spec_from_file_location('rp_setup',
+                     Path(__file__).resolve().parents[1] / 'setup.py')
+        setup = importlib.util.module_from_spec(setup_spec)
+        setup_spec.loader.exec_module(setup)
+        setup.proxy = proxy
+        setup.PROFILE = self.root / 'setup.json'
+        setup.run = lambda *args, **kwargs: SimpleNamespace(stdout='proxy.example.com\n')
+        return setup
+
+    def test_finish_accepts_official_manual_install_without_legacy_profile(self):
+        setup = self.load_setup()
+        self.domains = {'proxy.example.com': {'TPL': 'default'}}
+        setup.finish(origin='192.0.2.10')
+        profile = json.loads(setup.PROFILE.read_text())
+        self.assertEqual(profile['stage'], 'ready')
+        self.assertEqual(profile['origin'], '192.0.2.10')
+        self.assertNotIn('admin_password', profile)
+        self.assertEqual(setup.PROFILE.stat().st_mode & 0o777, 0o600)
+        self.assertTrue((self.state / 'installed.json').exists())
+
+    def test_manual_finish_rejects_live_web_before_creating_profile(self):
+        setup = self.load_setup()
+        self.domains = {'live.example.com': {'TPL': 'default'}}
+        with self.assertRaisesRegex(RuntimeError, 'dominios existentes'):
+            setup.finish(origin='192.0.2.10')
+        self.assertFalse(setup.PROFILE.exists())
+        self.assertFalse(self.backups.exists())
 
 
 if __name__ == '__main__':

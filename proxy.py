@@ -20,7 +20,7 @@ BACKUPS = Path('/root/hestia-reverse-proxy-backups')
 TEMPLATES = HESTIA / 'data/templates/web/nginx'
 PACKAGES = HESTIA / 'data/packages'
 MAP = Path('/etc/nginx/conf.d/rp-websocket.conf')
-VERSION = '1.1.0'
+VERSION = '1.2.0'
 
 
 def fail(message):

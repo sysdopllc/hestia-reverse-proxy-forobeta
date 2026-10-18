@@ -1,64 +1,57 @@
-# Validación de v1.1.0
+# Validación de v1.2.0
 
-17 de octubre de 2026. La revisión original consultó HestiaCP 1.10.5; es un dato de la revisión, no una versión exigida por el tutorial. El instalador usa el canal estable. Pruebas ejecutadas en un entorno aislado; ningún servidor de producción fue modificado.
+17 de Octubre de 2026. Se utilizó Ubuntu 24.04 LTS y el canal estable oficial de HestiaCP. El panel instalado mostró 1.10.5: es un dato del ejercicio, no una versión exigida por el tutorial.
 
-## Script: 11 pruebas aprobadas
+## Ejercicio real en un VPS temporal
 
-- Rechazo de IP y nombre TLS no válidos.
-- Simulación sin cambios en Hestia.
-- Rechazo si ya existen dominios.
-- Rechazo de origen igual a una IP del proxy.
-- Preparación, preservación de `default`/`suspended`, paquete mediante CLI y restauración.
-- Restauración automática tras un fallo de recarga simulado.
-- Rechazo de restauración cuando los archivos cambiaron después.
-- Rechazo de enlaces simbólicos inesperados.
+Se preparó un VPS SYSDOP Cloud One de 4 CPU, 4 GB de RAM y 128 GB, y un sitio temporal autorizado en un hosting cPanel externo. Los archivos de la aplicación permanecieron en ese hosting. Las capturas corresponden al ejercicio; las IP y credenciales están ocultas. La cuenta de demostración se activó para el laboratorio: las capturas no prueban un cobro ni una transacción Square.
 
-Estas pruebas utilizan un árbol temporal y sustituyen las llamadas a Hestia/systemd; verifican las protecciones y transacciones del script, no el funcionamiento interno del panel.
+Comprobaciones realizadas:
+
+1. Instalación de Hestia mediante su Bash oficial, con Nginx + Apache/PHP-FPM y sin instalar firewall ni Fail2Ban. Reinicio real y servicios activos.
+2. Barrido y restauración reales: 132 archivos comparados antes y después, sin diferencias; `nginx -t` correcto.
+3. Preparación v1.2.0 y asignación nativa del paquete a admin. Alta del dominio en la interfaz de Hestia: `rp` apareció como plantilla de proxy automáticamente.
+4. Emisión pública de Let's Encrypt para el panel, el dominio y su alias `www`.
+5. Once comprobaciones de tráfico aprobadas inicialmente, después de reconstruir el dominio y después de reemitir su certificado frontal mediante la función nativa usada por la renovación:
+   - Origen directo con certificado público válido.
+   - Página real entregada a través del proxy.
+   - HTTPS para dominio y `www`, también hasta el origen.
+   - `robots.txt` y sitemap idénticos a los archivos del origen.
+   - Sustitución de cabeceras de IP y protocolo falsificadas.
+   - Formulario POST, atributos de cookie y recepción de la cookie en la siguiente petición.
+   - Subida multipart de 64000 bytes con SHA256 idéntico.
+   - HTTP frontal hacia HTTPS de origen antes de activar Force SSL; después, redirección HTTP a HTTPS sin bucle.
+6. `v-rebuild-web-domain` conservó la plantilla y el sitio siguió pasando las pruebas. La reemisión nativa cambió realmente el certificado frontal y pasó nuevamente las pruebas.
+7. Reinicio final por la API del proveedor: nuevo arranque, Hestia/Nginx/Apache activos y sintaxis Nginx correcta. La batería de tráfico anterior se ejecutó antes de este último reinicio.
+
+Se verificaron ambos extremos HTTPS con confianza pública, sin omitir la validación del cliente ni la del upstream de Nginx. Para el vhost temporal del hosting externo se instaló una copia privada de un certificado nuevo del propio laboratorio. Esto no demuestra renovación automática en ese hosting: el tutorial exige conservar un mecanismo independiente para el certificado de origen.
+
+## Script: 13 pruebas aprobadas
+
+Las pruebas usan un árbol temporal y sustituyen las llamadas a Hestia/systemd. Comprueban validación de IP/SNI, simulación sin escrituras, rechazo de webs existentes, preservación de dependencias, barrido por nombre IP completo, transacción y rollback, cambios posteriores, enlaces simbólicos, excepción del hostname inicial y preparación después de una instalación oficial independiente del asistente antiguo.
 
 ```bash
 sudo python3 -m unittest discover -s tests -v
 ```
 
-Pruebas adicionales de la revisión:
-- Barrido de vhosts con nombre IP conservando 0rtt-anti-replay.conf.
-- Excepción para el hostname default del instalador, con rechazo de otras webs.
-- Modo automático, firewall y Fail2Ban desactivados en las opciones del instalador, sin contraseña en argv ni --force.
+No se presentan como prueba del comportamiento interno de Hestia.
 
-El nuevo asistente completo no se ha ejecutado contra un VPS real; sus opciones y los comandos nativos se contrastaron con el código oficial. Se revisó además, solo en lectura, un proxy existente: Nginx como proxy de Hestia, puertos `%proxy_port%`/`%proxy_ssl_port%` y asignación desde `PROXY_TEMPLATE`. No se publica configuración privada de ese servidor. Las pruebas de tráfico se repitieron con las plantillas de v1.1.0.
+## Nginx real: 14 comprobaciones en contenedor
 
-## Tráfico real: 14 comprobaciones aprobadas
-
-Nginx 1.28 en contenedor, origen HTTPS local con certificado de prueba, conexiones limitadas a loopback:
-
-1. Sintaxis `nginx -t`.
-2. `robots.txt` desde el origen por HTTP.
-3. Sitemap desde el origen por HTTP.
-4. Cabeceras, cookies y protección frente a IP falsificada por HTTP.
-5. Ruta de challenge con la forma del include nativo de Hestia y bloqueo de `.env` por HTTP.
-6. `robots.txt` desde el origen por HTTPS.
-7. Sitemap desde el origen por HTTPS.
-8. Cabeceras, cookies y protección frente a IP falsificada por HTTPS.
-9. Challenge y bloqueo de `.env` por HTTPS.
-10. Cuerpo POST conservado, superior a 64 KiB.
-11. SNI del dominio y `www` observado en el origen.
-12. Certificado de origen con nombre incorrecto rechazado con 502.
-13. WebSocket: respuesta 101 y un frame de texto atravesando el proxy.
-14. Recarga de Nginx y petición HTTPS posterior.
-
-Requiere Podman, OpenSSL y Python 3. El contenedor se detiene al acabar; se conserva para inspección. No se monta ningún archivo de Hestia real.
+Las plantillas se comprobaron con Nginx 1.28, origen HTTPS local y puertos limitados a loopback. Las pruebas cubren sintaxis, `robots.txt`, sitemap, cabeceras/cookies, challenge nativo, bloqueo de dotfiles, HTTP/HTTPS, POST superior a 64 KiB, SNI de dominio y alias, rechazo de certificado con nombre incorrecto, WebSocket con respuesta 101 y un frame de texto, recarga y petición posterior.
 
 ```bash
 python3 tests/integration.py --workdir ./lab-validacion
 ```
 
-El directorio debe ser nuevo. Los certificados de prueba se generan localmente y no se publican.
+Requiere Podman, OpenSSL y Python 3. El directorio debe ser nuevo. El contenedor se detiene al acabar; quedan artefactos locales para inspección.
 
-## Límites pendientes de validar en un VPS de laboratorio
+## Límites
 
-- Instalación completa de HestiaCP en Ubuntu 24.04.
-- Crear usuario, dominio y asignar el paquete en el panel real.
-- Emisión y renovación pública de Let's Encrypt.
-- Regeneración y actualización de Hestia con dominios activos.
-- Firewall del origen, Cloudflare, IPv6 público y aplicaciones específicas.
+- No se probó una actualización futura de Hestia con sitios activos. Puede reponer plantillas estándar; no se recomienda programar purgas automáticas.
+- No se probó Cloudflare con nube activa, IPv6 público, un firewall de origen ni una aplicación WebSocket en el hosting externo. La prueba WebSocket corresponde al contenedor.
+- No se certificó inicio de sesión de un CMS concreto, tráfico elevado, streaming prolongado ni tamaños de subida distintos de los indicados.
+- Reemitir el certificado frontal valida ese recorrido de ACME, pero no simula el paso de meses ni certifica una renovación futura. Revisa cron, DNS y acceso al challenge en tu entorno.
+- Los hostnames de las capturas son temporales y se retiran al cerrar el laboratorio. No son servicios de demostración permanentes.
 
-No se presentan las pruebas de contenedor como certificación de esos pasos. La guía incluye comprobaciones para cada instalación.
+Los resultados corresponden a este ejercicio y a esta revisión. Cada instalación necesita comprobar su aplicación, DNS y mecanismo de renovación.

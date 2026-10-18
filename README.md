@@ -10,7 +10,9 @@ Reemplazo del material del tutorial de 2024 cuyo repositorio original fue retira
 
 **Alcance:** VPS nuevo con Ubuntu LTS admitido por Hestia y su esquema **Nginx como proxy + Apache/PHP-FPM**, como en la guía original. El instalador usa el canal estable oficial de Hestia, sin fijar una única versión. Las plantillas `rp` envían las peticiones directamente al servidor final. No desinstales paquetes base del panel.
 
-**Validación:** 11 pruebas de seguridad/rollback del script y 14 comprobaciones contra Nginx real. No se ha probado una instalación completa de Hestia, su actualización ni una emisión/renovación pública de Let's Encrypt. Detalles en [VALIDATION.md](VALIDATION.md).
+**Validación:** 13 pruebas del script, 14 comprobaciones con Nginx real y un ejercicio completo en un VPS temporal: instalación oficial, barrido y restauración, dominio desde el panel, HTTPS hasta un hosting externo, formularios/cookies/subida, reconstrucción y reemisión pública del certificado frontal. Alcance y límites en [VALIDATION.md](VALIDATION.md).
+
+Las [capturas del ejercicio](assets/README.md) acompañan la guía visual de ForoBeta. Los hostnames de demostración son temporales; utiliza tu propio dominio.
 
 ## 1. Antes de empezar
 
@@ -29,31 +31,36 @@ curl --resolve www.ejemplo.com:443:203.0.113.10 https://www.ejemplo.com/ -I
 
 Las direcciones `203.0.113.10` y los dominios de ejemplo se sustituyen por los tuyos. No uses `-k` para esconder un certificado incorrecto.
 
-## 2. Instalar Hestia estable: un bloque
+## 2. Instalar Hestia estable con su comando oficial
 
 En un VPS Ubuntu LTS nuevo, como root:
 
 ```bash
-apt-get update && apt-get install -y ca-certificates curl git python3 && \
-git clone --branch v1.1.0 --depth 1 \
-  https://github.com/sysdopllc/hestia-reverse-proxy-forobeta.git \
-  /root/hestia-reverse-proxy && \
-python3 /root/hestia-reverse-proxy/setup.py install
+curl -fSL https://raw.githubusercontent.com/hestiacp/hestiacp/release/install/hst-install.sh -o hst-install.sh && \
+bash hst-install.sh --apache yes --phpfpm yes --multiphp no \
+  --vsftpd no --proftpd no --named no --mysql no --mysql8 no \
+  --postgresql no --exim no --dovecot no --clamav no --spamassassin no \
+  --iptables no --fail2ban no --quota no --api no --webterminal no \
+  --port 56464 --lang es
 ```
 
-El asistente pregunta hostname, correo e IP del origen. Descarga el instalador estable oficial de Hestia sin fijar una versión del panel. Hestia valida el sistema operativo admitido. Se genera una contraseña y se guarda en `/root/hestia-reverse-proxy-setup.json`, accesible solo para root; se entrega al instalador por stdin, no como argumento del comando.
+Este comando descarga y ejecuta el instalador oficial estable, sin fijar una versión de Hestia. Confirma la instalación, usa `admin` y elige contraseña, correo y hostname. Guarda el acceso antes de reiniciar. La contraseña no se escribe en los argumentos del comando. Si faltan `curl` o certificados CA en una imagen mínima, instálalos con `apt-get update && apt-get install -y ca-certificates curl`.
 
 La receta conserva **`--iptables no --fail2ban no`**. No instala firewall ni Fail2Ban, ni desactiva protecciones existentes. Instala Nginx + Apache/PHP-FPM, sin DNS, correo ni bases de datos. El panel usa el puerto 56464. El asistente rechaza una instalación existente y no usa `--force`.
 
-Cuando termine, reinicia con `reboot` y vuelve a entrar por SSH.
+Cuando termine, sigue la indicación de reinicio de Hestia y vuelve a entrar por SSH. La preparación de las plantillas se ejecuta después; Python no instala Hestia en este recorrido.
 
 ## 3. Barrido automático de vhosts, plantillas y paquetes
 
 ```bash
+apt-get update && apt-get install -y git python3 && \
+git clone --branch v1.2.0 --depth 1 \
+  https://github.com/sysdopllc/hestia-reverse-proxy-forobeta.git \
+  /root/hestia-reverse-proxy && \
 python3 /root/hestia-reverse-proxy/setup.py finish
 ```
 
-Esta es la limpieza de la receta original, ahora con respaldo y registro:
+Indica la IP del servidor final cuando la pida. El asistente comprueba el panel instalado, registra el origen y realiza la limpieza de la receta original con respaldo:
 
 1. Aparta los vhosts cuyo nombre completo es una IP (`/etc/nginx/conf.d/192.0.2.20.conf`, por ejemplo). No usa `0*`/`1*`, que también alcanzarían archivos como `0rtt-anti-replay.conf`.
 2. Aparta plantillas de aplicaciones y paquetes sin usuarios, manteniendo las dependencias de Hestia (`default`, `suspended` y las referenciadas).
@@ -66,7 +73,7 @@ No necesitas editar vhosts a mano ni hacer dos pasadas de simulación/aplicació
 
 ## 4. Usuario, dominio y DNS
 
-1. Entra a Hestia: `https://IP_DEL_PROXY:56464`, usuario admin y contraseña mostrada al terminar. Comprueba la identidad del panel y configura su certificado.
+1. Entra a Hestia: `https://proxy.tudominio.com:56464`, usuario admin y contraseña elegida al instalar. Comprueba que el hostname apunte a tu VPS y configura su certificado. También puedes acceder inicialmente por IP, verificando su identidad.
 2. El asistente ya asignó el paquete **reverse-proxy** a admin. El hostname que creó Hestia se conserva y no se transforma en proxy.
 3. En Web agrega tu dominio. Agrega `www` como alias solo si lo usarás. No crees DNS ni correo en este VPS.
 4. En opciones avanzadas confirma que la **plantilla de proxy es `rp`**; la plantilla web permanece en `default`.
@@ -88,6 +95,8 @@ Con el DNS apuntando al proxy y el puerto 80 accesible, edita el dominio en Hest
 Cloudflare es opcional. Para la primera emisión puedes usar temporalmente **Solo DNS**; eso expone la IP del proxy, que es el destino publicado. Después activa la nube si la quieres y utiliza **Full (strict)** con un certificado válido en el proxy. No soluciones errores de certificados cambiando a Flexible.
 
 La ruta de validación `/.well-known/acme-challenge/` la atiende Hestia mediante sus includes nativos. No se agrega otra regla que compita con ella. Para las renovaciones, esa ruta debe seguir accesible y sin challenge/bloqueo del WAF. No dependas de una excepción por User-Agent como autenticación de Let's Encrypt.
+
+Con la nube activa de Cloudflare, comprueba además la restauración de la IP real en Nginx, confiando únicamente en sus rangos oficiales. Después, el servidor final debe confiar solo en tu VPS proxy. No aceptes cabeceras de IP real de cualquier conexión. [Documentación de Cloudflare](https://developers.cloudflare.com/support/troubleshooting/restoring-visitor-ips/restoring-original-visitor-ips/).
 
 **Hay dos certificados distintos:** el del proxy y el del origen. Al cambiar DNS, el origen también necesita un método de renovación que siga funcionando. Usa DNS-01, un hostname de origen con renovación propia u otro mecanismo del proveedor. Esta plantilla no reenvía al origen los desafíos que Hestia atiende localmente.
 
@@ -121,7 +130,7 @@ El proxy no añade caché de páginas ni reemplaza archivos estáticos del orige
 
 Si administras el servidor final, restringe los puertos web para aceptar al proxy y a los servicios expresamente necesarios. Conserva acceso administrativo y una vía de renovación de certificados. En hosting compartido solicita al proveedor las restricciones y la configuración de IP real que permita.
 
-Un reverse proxy no elimina el historial DNS ni las filtraciones por correo, subdominios, IPv6 o la propia aplicación; tampoco añade por sí mismo protección DDoS. Cambiar el puerto del origen no reemplaza el firewall. Una VPN entre servidores puede añadirse en una guía avanzada.
+Un Reverse Proxy no elimina el historial DNS ni las filtraciones por correo, subdominios, IPv6 o la propia aplicación; tampoco añade por sí mismo protección DDoS. Cambiar el puerto del origen no reemplaza el firewall. Una VPN entre servidores puede añadirse en una guía avanzada.
 
 ## Restaurar o actualizar
 
@@ -142,11 +151,11 @@ python3 proxy.py render --origin 203.0.113.10 --output ./generadas
 
 El directorio debe ser nuevo. Las plantillas de esta revisión usan `%proxy_port%` y `%proxy_ssl_port%` en `data/templates/web/nginx/`, con `PROXY_TEMPLATE=rp` y `WEB_TEMPLATE=default`. El barrido sigue siendo exclusivamente para un VPS nuevo. En instalaciones existentes, revisa y prueba una migración por dominio; no fuerces la preparación.
 
-La revisión v1.0.0 utilizaba la modalidad Nginx sin Apache. No mezcles sus rutas ni paquetes con v1.1.0 y no ejecutes el barrido para actualizar un proxy con webs.
+La revisión v1.0.0 utilizaba la modalidad Nginx sin Apache. No mezcles sus rutas ni paquetes con v1.2.0 y no ejecutes el barrido para actualizar un proxy con webs.
 
 ## Archivos y referencias
 
-- `setup.py`: instalación asistida y barrido automático, en dos fases.
+- `setup.py`: barrido automático después de instalar Hestia oficialmente. Conserva el instalador asistido anterior solo por compatibilidad.
 - `proxy.py`: simulación, preparación con limpieza y restauración.
 - `templates/rp.tpl`, `templates/rp.stpl`: HTTP y HTTPS, con marcadores `@@...@@` que sustituye el script.
 - `templates/rp-websocket.conf`: mapa utilizado por ambas plantillas.

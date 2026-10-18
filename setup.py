@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two-stage setup for a NEW dedicated VPS; the forum user pastes two commands."""
+"""Automatic cleanup after the official Hestia installer on a NEW dedicated VPS."""
 import argparse
 import json
 import os
@@ -21,9 +21,10 @@ def run(*args, **kwargs):
 
 
 def save(profile):
-    with PROFILE.open('w') as stream:
+    fd = os.open(PROFILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, 'w') as stream:
         json.dump(profile, stream, indent=2)
-    PROFILE.chmod(0o600)
 
 
 def installer_arguments(script, hostname, email):
@@ -70,14 +71,27 @@ def install():
     print('Usuario: admin. Datos de acceso guardados en ' + str(PROFILE) + ' (solo root).')
 
 
-def finish():
+def finish(origin=None, tls_name=None):
+    # The recommended path installs Hestia directly with its visible Bash command.
+    # It must not depend on a profile created by this optional legacy installer.
+    if not PROFILE.exists():
+        hostname = run('hostname', '-f', capture_output=True, text=True).stdout.strip().lower()
+        proxy.inspect_server(hostname)
+        origin = origin or input('IP del servidor final: ').strip()
+        proxy.origin_values(origin, 443, tls_name or '$host')
+        save({'hostname': hostname, 'origin': origin, 'tls_name': tls_name or '$host',
+              'stage': 'installed'})
     if PROFILE.is_symlink() or PROFILE.stat().st_uid != 0 or PROFILE.stat().st_mode & 0o077:
         raise RuntimeError('El registro de instalación debe pertenecer a root y tener modo 600.')
     profile = json.loads(PROFILE.read_text())
+    if origin and origin != profile['origin']:
+        raise RuntimeError('El origen no coincide con el registro existente; no se cambia automáticamente.')
+    if tls_name and tls_name != profile.get('tls_name', '$host'):
+        raise RuntimeError('El nombre TLS no coincide con el registro existente.')
     if profile.get('stage') not in ('installed', 'prepared', 'ready'):
         raise RuntimeError('La instalación no terminó correctamente. Revisa su salida antes de continuar.')
     if profile['stage'] == 'installed':
-        args = argparse.Namespace(origin=profile['origin'], port=443, tls_name='$host',
+        args = argparse.Namespace(origin=profile['origin'], port=443, tls_name=profile.get('tls_name', '$host'),
                                   apply=True, allow_setup_domain=profile['hostname'])
         # A completed preparation can survive an interruption before the profile is updated.
         marker = proxy.STATE / 'installed.json'
@@ -107,7 +121,7 @@ def finish():
     run('nginx', '-t')
     print('\nBARRIDO TERMINADO. Plantillas y paquete configurados automáticamente.')
     print('Panel: https://' + profile['hostname'] + ':56464 | Usuario: admin')
-    print('Contraseña del panel: ' + profile['admin_password'])
+    print('Usa la contraseña que elegiste durante la instalación de Hestia.')
     print('Ahora entra a Web, agrega tu dominio, cambia DNS y emite SSL como muestra el tutorial.')
     print('El hostname de instalación se conserva para el panel; no es tu sitio final.')
 
@@ -115,14 +129,16 @@ def finish():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('install', 'finish'))
+    parser.add_argument('--origin', help='IP del servidor final; si se omite, se pregunta una vez')
+    parser.add_argument('--tls-name', help='Nombre del certificado del origen; por defecto, el dominio visitado')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise RuntimeError('Ejecuta este asistente como root en el VPS proxy nuevo.')
-    os.umask(0o077)
+    os.umask(0o022)
     import fcntl
     with open('/run/lock/hestia-reverse-proxy.lock', 'w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        install() if args.action == 'install' else finish()
+        install() if args.action == 'install' else finish(args.origin, args.tls_name)
 
 
 if __name__ == '__main__':
